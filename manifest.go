@@ -26,8 +26,10 @@ import (
 	"github.com/dgraph-io/badger/v4/y"
 )
 
+
 // Manifest represents the contents of the MANIFEST file in a Badger store.
-//
+// BASICALLY LIKE IT STORES METADATA 
+
 // The MANIFEST file describes the startup state of the db -- all LSM files and what level they're
 // at.
 //
@@ -96,6 +98,7 @@ const (
 	manifestDeletionsRatio            = 10
 )
 
+// UNDERSTOOD
 // asChanges returns a sequence of changes that could be used to recreate the Manifest in its
 // present state.
 func (m *Manifest) asChanges() []*pb.ManifestChange {
@@ -106,6 +109,7 @@ func (m *Manifest) asChanges() []*pb.ManifestChange {
 	return changes
 }
 
+// UNDERSTOOD
 func (m *Manifest) clone() Manifest {
 	changeSet := pb.ManifestChangeSet{Changes: m.asChanges()}
 	ret := createManifest()
@@ -113,6 +117,7 @@ func (m *Manifest) clone() Manifest {
 	return ret
 }
 
+// UNDERSTOOD
 // openOrCreateManifestFile opens a Badger manifest file if it exists, or creates one if
 // doesn’t exists.
 func openOrCreateManifestFile(opt Options) (
@@ -124,6 +129,7 @@ func openOrCreateManifestFile(opt Options) (
 		manifestDeletionsRewriteThreshold)
 }
 
+// UNDERSTOOD
 func helpOpenOrCreateManifestFile(dir string, readOnly bool, extMagic uint16,
 	deletionsThreshold int) (*manifestFile, Manifest, error) {
 
@@ -141,21 +147,29 @@ func helpOpenOrCreateManifestFile(dir string, readOnly bool, extMagic uint16,
 			return nil, Manifest{}, fmt.Errorf("no manifest found, required for read-only db")
 		}
 		m := createManifest()
+
+		// this manifest file here is more or less empty cuz nothing has been created
 		fp, netCreations, err := helpRewrite(dir, &m, extMagic)
 		if err != nil {
 			return nil, Manifest{}, err
 		}
+		// we need to make sure its empty
 		y.AssertTrue(netCreations == 0)
 		mf := &manifestFile{
 			fp:                        fp,
 			directory:                 dir,
 			externalMagic:             extMagic,
-			manifest:                  m.clone(),
+			manifest:                  m.clone(), // why are we doing this??
+			// (We need one immutable copy and one mutable copy of the manifest.  
+			// Easiest way is to construct two of them.)
 			deletionsRewriteThreshold: deletionsThreshold,
 		}
+
+		// if the manifest does not exist we just create a new one and return it
 		return mf, m, nil
 	}
 
+	// truncateOffset will always be equal to the offset uptill which the file contains valid info
 	manifest, truncOffset, err := ReplayManifestFile(fp, extMagic)
 	if err != nil {
 		_ = fp.Close()
@@ -169,6 +183,8 @@ func helpOpenOrCreateManifestFile(dir string, readOnly bool, extMagic uint16,
 			return nil, Manifest{}, err
 		}
 	}
+
+	// moves till the end of the file -> sets the file up for the next Write
 	if _, err = fp.Seek(0, io.SeekEnd); err != nil {
 		_ = fp.Close()
 		return nil, Manifest{}, err
@@ -178,18 +194,20 @@ func helpOpenOrCreateManifestFile(dir string, readOnly bool, extMagic uint16,
 		fp:                        fp,
 		directory:                 dir,
 		externalMagic:             extMagic,
-		manifest:                  manifest.clone(),
+		manifest:                  manifest.clone(), // why are we always cloning the manifest
 		deletionsRewriteThreshold: deletionsThreshold,
 	}
 	return mf, manifest, nil
 }
 
+// UNDERSTOOD
 func (mf *manifestFile) close() error {
 	if mf.inMemory {
 		return nil
 	}
 	return mf.fp.Close()
 }
+
 
 // addChanges writes a batch of changes, atomically, to the file.  By "atomically" that means when
 // we replay the MANIFEST file, we'll either replay all the changes or none of them.  (The truth of
@@ -239,6 +257,7 @@ var magicText = [4]byte{'B', 'd', 'g', 'r'}
 // The magic version number. It is allocated 2 bytes, so it's value must be <= math.MaxUint16
 const badgerMagicVersion = 8
 
+// UNDERSTOOD
 func helpRewrite(dir string, m *Manifest, extMagic uint16) (*os.File, int, error) {
 	rewritePath := filepath.Join(dir, manifestRewriteFilename)
 	// We explicitly sync.
@@ -322,6 +341,8 @@ func (mf *manifestFile) rewrite() error {
 	return nil
 }
 
+
+// just a wrapper around bufio, just used to maintain the total count of bytes 
 type countingReader struct {
 	wrapped *bufio.Reader
 	count   int64
@@ -346,6 +367,7 @@ var (
 	errBadChecksum = stderrors.New("manifest has checksum mismatch")
 )
 
+// UNDERSTOOD
 // ReplayManifestFile reads the manifest file and constructs two manifest objects.  (We need one
 // immutable copy and one mutable copy of the manifest.  Easiest way is to construct two of them.)
 // Also, returns the last offset after a completely read manifest entry -- the file must be
@@ -386,7 +408,12 @@ func ReplayManifestFile(fp *os.File, extMagic uint16) (Manifest, int64, error) {
 
 	build := createManifest()
 	var offset int64
+
+	// we continuously iterate through all the ManifestChangeSets and apply it to the build
 	for {
+		// we set the offset = r.count in the beginning of every iteration so we can be sure 
+		// that if any error occurs the offset which we return is only the valid parts of the 
+		// file which we have read 
 		offset = r.count
 		var lenCrcBuf [8]byte
 		_, err := io.ReadFull(&r, lenCrcBuf[:])
@@ -410,6 +437,8 @@ func ReplayManifestFile(fp *os.File, extMagic uint16) (Manifest, int64, error) {
 			}
 			return Manifest{}, 0, err
 		}
+
+		// making sure the checkSums match
 		if crc32.Checksum(buf, y.CastagnoliCrcTable) != y.BytesToU32(lenCrcBuf[4:8]) {
 			return Manifest{}, 0, errBadChecksum
 		}
@@ -427,6 +456,9 @@ func ReplayManifestFile(fp *os.File, extMagic uint16) (Manifest, int64, error) {
 	return build, offset, nil
 }
 
+// UNDERSTOOD
+// goes through the manifest changes in tc and depending on the type 
+// applys it to build build is the in-memory manifest 
 func applyManifestChange(build *Manifest, tc *pb.ManifestChange) error {
 	switch tc.Op {
 	case pb.ManifestChange_CREATE:
@@ -456,7 +488,7 @@ func applyManifestChange(build *Manifest, tc *pb.ManifestChange) error {
 	}
 	return nil
 }
-
+// UNDERSTOOD
 // This is not a "recoverable" error -- opening the KV store fails because the MANIFEST file is
 // just plain broken.
 func applyChangeSet(build *Manifest, changeSet *pb.ManifestChangeSet) error {
@@ -468,6 +500,7 @@ func applyChangeSet(build *Manifest, changeSet *pb.ManifestChangeSet) error {
 	return nil
 }
 
+// UNDERSTOOD
 func newCreateChange(
 	id uint64, level int, keyID uint64, c options.CompressionType) *pb.ManifestChange {
 	return &pb.ManifestChange{
@@ -480,7 +513,7 @@ func newCreateChange(
 		Compression:    uint32(c),
 	}
 }
-
+// UNDERSTOOD
 func newDeleteChange(id uint64) *pb.ManifestChange {
 	return &pb.ManifestChange{
 		Id: id,

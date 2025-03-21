@@ -85,6 +85,30 @@ func OpenSyncedFile(filename string, sync bool) (*os.File, error) {
 }
 
 // OpenTruncFile opens the file with O_RDWR | O_CREATE | O_TRUNC
+// O_RDWR: Opens the file for both reading and writing
+// O_CREATE: Creates the file if it doesn't exist
+// O_TRUNC: Truncates the file to length zero if it exists
+// The O_TRUNC flag is particularly important - it means that if the file already exists, 
+// all its current content will be erased. This is useful when you want to completely replace a
+// file's contents rather than append to it or modify parts of it.
+// Additionally, the function takes a sync parameter:
+
+// If sync is true, it adds the datasyncFileFlag to the flags
+// Based on the comment, datasyncFileFlag is set to O_DSYNC on platforms that support it
+// O_DSYNC ensures that each write operation waits for the data to be physically written
+// to the disk before continuing (but not necessarily the metadata)
+
+// The final parameter 0600 sets the file permissions (in octal):
+
+// 6 = read + write for the owner
+// 0 = no permissions for the group
+// 0 = no permissions for others
+
+// This means only the user who creates the file can read or write to it.
+// The function is useful for scenarios where you need to:
+// Create a fresh file or completely overwrite an existing one
+// Have both read and write access to the file
+// Optionally ensure data durability through synchronous writes
 func OpenTruncFile(filename string, sync bool) (*os.File, error) {
 	flags := os.O_RDWR | os.O_CREATE | os.O_TRUNC
 	if sync {

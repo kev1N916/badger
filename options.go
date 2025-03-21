@@ -349,6 +349,12 @@ func (opt Options) FromSuperFlag(superflag string) Options {
 	return opt
 }
 
+/*
+Keys and values are written in separate directories in BadgerDb
+the path where keys are written is given by opt.Dir and the path where
+the vlues are written is given by opt.ValueDir
+*/
+
 // WithDir returns a new Options value with Dir set to the given value.
 //
 // Dir is the path of the directory where key data will be stored in.
@@ -460,6 +466,20 @@ func (opt Options) WithBaseTableSize(val int64) Options {
 	return opt
 }
 
+// In leveling, each level may have at most one run, and every time a run in Level i − 1 (i ≥ 1) 
+// is moved to Level i, it is greedily sort-merged with the run from Level i, if it exists.
+// In the context of LSM trees, a "run" typically refers to a sorted segment of data on disk.
+//  This is essentially an SSTable (Sorted String Table). 
+//  So, when the statement says "each level may have at most one run," 
+//  it means each level is designed to ideally contain a single, large, sorted SSTable.
+
+// The LSM tree is a sequence of levels. Each level is one sorted run that can 
+// be range partitioned into many files. Each level is many times larger than the 
+// previous level. The size ratio of adjacent levels is sometimes called the fanout 
+// and write amplification is minimized when the same fanout is used between all levels. 
+// Compaction into level N (Ln) merges data from Ln-1 into Ln. 
+// Compaction into Ln rewrites data that was previously merged into Ln
+
 // WithLevelSizeMultiplier returns a new Options value with LevelSizeMultiplier set to the given
 // value.
 //
@@ -490,6 +510,41 @@ func (opt Options) WithMaxLevels(val int) Options {
 //
 // The default value of ValueThreshold is 1 MB, and LSMOnlyOptions sets it to maxValueThreshold
 // which is set to 1 MB too.
+
+// The Problem: Large Values in LSM Trees
+
+// In a typical LSM tree, the SSTables store key-value pairs. 
+// When a value is relatively small, storing it directly alongside the key within the SSTable 
+// is efficient. However, if values can be very large (e.g., multi-megabyte documents or blobs), 
+// storing them directly in the SSTables can lead to several potential issues:
+
+// Increased SSTable Size: Large values can significantly inflate the size of SSTables. 
+// This can make compaction operations more I/O intensive and time-consuming, as more
+//  data needs to be read and written.
+// Inefficient Reads for Small Values: Even when you're only interested in the key or
+//  a small portion of the data, the system might need to read large chunks of the SSTable from 
+// disk to access the associated value.
+// Memory Usage During Compaction: When merging SSTables containing large values, 
+// the system might require more memory to hold and process these values.
+// The Solution: Value Log Files
+
+// To address these issues, some LSM tree implementations employ a strategy of storing
+//  large values separately in dedicated "log value files" (or similar). In this approach:
+
+// In the SSTable: Instead of the entire large value, the SSTable stores only the key
+// and a pointer or reference to the actual value's location within the log value files.
+// Log Value Files: These are separate files (often append-only for efficiency) where the
+// large values are stored sequentially.
+// What is ValueThreshold?
+
+// The ValueThreshold acts as a decision point for determining whether a value should
+// be stored directly in the SSTable or separately in the log value files.
+
+// If a value's size is less than or equal to the ValueThreshold: The entire value is
+// stored directly within the SSTable alongside its key.
+// If a value's size is greater than the ValueThreshold: Only a pointer or reference
+// to the value's location in the log value files is stored in the SSTable. 
+// The actual value is written to the log value files.
 func (opt Options) WithValueThreshold(val int64) Options {
 	opt.ValueThreshold = val
 	return opt
@@ -554,6 +609,19 @@ func (opt Options) WithBloomFalsePositive(val float64) Options {
 // internally. Each block is compressed using prefix diff encoding.
 //
 // The default value of BlockSize is 4KB.
+
+// The comment mentions that "Each block is compressed using prefix diff encoding."
+//  This is a common technique used to reduce the storage space occupied by the data within each block. 
+// Here's how it typically works:
+
+// Sorting: Within a block, the keys are already sorted.
+// Prefix Sharing: Consecutive keys within the block often share
+// a common prefix. Prefix diff encoding exploits this by storing only the differing 
+// suffix of subsequent keys relative to the previous key. 
+// For example, if you have keys "apple", "apricot", "banana" within a block, 
+// the encoding might store "apple", then the difference "ricot" (after "ap"), and then "banana".
+// Compression: After prefix diff encoding, the (often smaller) data within each 
+// block is further compressed using a standard compression algorithm (like Snappy, zstd, etc.).
 func (opt Options) WithBlockSize(val int) Options {
 	opt.BlockSize = val
 	return opt
@@ -605,6 +673,17 @@ func (opt Options) WithValueLogMaxEntries(val uint32) Options {
 // WithNumCompactors sets the number of compaction workers to run concurrently.  Setting this to
 // zero stops compactions, which could eventually cause writes to block forever.
 //
+// Level-based prioritization: The dedicated worker for L0-L1 compaction exists because these 
+// levels are particularly important for write performance. L0 files often overlap in key ranges,
+// which can slow down reads if they accumulate.
+//
+// Compactions use file-level locking to ensure multiple workers don't try to compact the same files
+// A manifest or version set tracks all ongoing compactions
+// Workers may use atomic operations for coordinating metadata updates
+//
+// The concurrent approach significantly improves throughput compared to single-threaded compaction, 
+// especially on multi-core systems and when dealing with large datasets. 
+// It allows the database to keep accepting writes while maintenance work happens in the background.
 // The default value of NumCompactors is 4. One is dedicated just for L0 and L1.
 func (opt Options) WithNumCompactors(val int) Options {
 	opt.NumCompactors = val
@@ -767,6 +846,8 @@ func (opt Options) WithDetectConflicts(b bool) Options {
 // WithNamespaceOffset returns a new Options value with NamespaceOffset set to the given value. DB
 // will expect the namespace in each key at the 8 bytes starting from NamespaceOffset. A negative
 // value means that namespace is not stored in the key.
+//
+// Need to Understand this better
 //
 // The default value for NamespaceOffset is -1.
 func (opt Options) WithNamespaceOffset(offset int) Options {

@@ -134,8 +134,8 @@ func checkAndSetOptions(opt *Options) error {
 	if opt.InMemory && (opt.Dir != "" || opt.ValueDir != "") {
 		return errors.New("Cannot use badger in Disk-less mode with Dir or ValueDir set")
 	}
-	opt.maxBatchSize = (15 * opt.MemTableSize) / 100
-	opt.maxBatchCount = opt.maxBatchSize / int64(skl.MaxNodeSize)
+	opt.maxBatchSize = (15 * opt.MemTableSize) / 100   // 96Mb if we are using default options
+	opt.maxBatchCount = opt.maxBatchSize / int64(skl.MaxNodeSize)  // used in skiplists , i havent gone through skiplists
 
 	// This is the maximum value, vlogThreshold can have if dynamic thresholding is enabled.
 	opt.maxValueThreshold = math.Min(maxValueThreshold, float64(opt.maxBatchSize))
@@ -167,6 +167,9 @@ func checkAndSetOptions(opt *Options) error {
 		opt.CompactL0OnClose = false
 	}
 
+	// caches are only used when opt.Compression is not set to opt.None as we 
+	// dont want to keep on decompressing or decrypting a block as it will use up 
+	// cpu power 
 	needCache := (opt.Compression != options.None) || (len(opt.EncryptionKey) > 0)
 	if needCache && opt.BlockCacheSize == 0 {
 		panic("BlockCacheSize should be set since compression/encryption are enabled")
@@ -176,6 +179,8 @@ func checkAndSetOptions(opt *Options) error {
 
 // Open returns a new DB object.
 func Open(opt Options) (*DB, error) {
+
+	// checks if all the options are appropriate
 	if err := checkAndSetOptions(&opt); err != nil {
 		return nil, err
 	}
@@ -1957,15 +1962,22 @@ func (db *DB) syncDir(dir string) error {
 
 func createDirs(opt Options) error {
 	for _, path := range []string{opt.Dir, opt.ValueDir} {
+
+		// checks if the directory already exists 
 		dirExists, err := exists(path)
 		if err != nil {
 			return y.Wrapf(err, "Invalid Dir: %q", path)
 		}
 		if !dirExists {
+
+			// if its read only then an error is returned as we already need an existing directory 
+			// to read from 
 			if opt.ReadOnly {
 				return errors.Errorf("Cannot find directory %q for read-only open", path)
 			}
 			// Try to create the directory
+			// a directory with mode 0700 can only be accessed, modified, and listed by its owner.
+			//  No one else (not even members of the owning group) has any access to it.
 			err = os.MkdirAll(path, 0700)
 			if err != nil {
 				return y.Wrapf(err, "Error Creating Dir: %q", path)

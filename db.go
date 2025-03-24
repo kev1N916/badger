@@ -114,8 +114,8 @@ type DB struct {
 
 	pub        *publisher
 	registry   *KeyRegistry
-	blockCache *ristretto.Cache[[]byte, *table.Block]
-	indexCache *ristretto.Cache[uint64, *fb.TableIndex]
+	blockCache *ristretto.Cache[[]byte, *table.Block]  // LFU CACHE
+	indexCache *ristretto.Cache[uint64, *fb.TableIndex] // LFU CACHE
 	allocPool  *z.AllocatorPool
 }
 
@@ -262,6 +262,36 @@ func Open(opt Options) (*DB, error) {
 		}
 	}()
 
+	/*
+	Batching works pretty much how you’d think. Rather than acquiring a mutex lock for every metadata mutation,
+	we wait for a ring buffer to fill up before we acquire a mutex and process the mutations.
+	This lowers contention considerably with little overhead.
+	We apply this method for all Gets and Sets to the cache.
+	All Gets to the cache are, of course, immediately serviced. 
+	The hard part is to capture the Get, so we can keep track of the key access. 
+	In an LRU cache, typically a key would be placed at the head of a linked list. 
+	In our LFU based cache, we need to increment an item’s hit counter.
+	Both operations require thread-safe access to a cache global struct.
+	The question is how do we implement this batching process, without acquiring yet another lock.
+	This might sound like a perfect use case of Go channels, and it is. 
+	Unfortunately, the throughput performance of channels prevented us from using them. 
+	Instead, we devised a nifty way to use sync.Pool to implement striped, 
+	lossy ring buffers that have great performance with little loss of data.
+
+	This might sound like a perfect use case of Go channels, and it is. 
+	Unfortunately, the throughput performance of channels prevented us from using them.
+	Instead, we devised a nifty way to use sync.Pool to implement striped, lossy ring buffers
+	that have great performance with little loss of data.
+	Any item stored in the Pool may be removed automatically at any time without notification.
+	That introduces one level of lossy behavior. 
+	Each item in Pool is effectively a batch of keys. When the batch fills up, 
+	it gets pushed to a channel. The channel size is deliberately kept small to avoid consuming
+	too many CPU cycles to process it. If the channel is full, the batch is dropped. 
+	This introduces a secondary level of lossy behavior. 
+	A goroutine picks up this batch from the internal channel and processes the keys, 
+	updating their hit counter.
+	*/
+
 	if opt.BlockCacheSize > 0 {
 		numInCache := opt.BlockCacheSize / int64(opt.BlockSize)
 		if numInCache == 0 {
@@ -269,7 +299,6 @@ func Open(opt Options) (*DB, error) {
 			// the number of counters to be greater than zero.
 			numInCache = 1
 		}
-
 		config := ristretto.Config[[]byte, *table.Block]{
 			NumCounters: numInCache * 8,
 			MaxCost:     opt.BlockCacheSize,
@@ -305,14 +334,20 @@ func Open(opt Options) (*DB, error) {
 		}
 	}
 
-	db.closers.cacheHealth = z.NewCloser(1)
+	db.closers.cacheHealth = z.NewCloser(1) // closers are basically used for efficient handling of goroutines
+	// monitors both the caches
 	go db.monitorCache(db.closers.cacheHealth)
 
 	if db.opt.InMemory {
+		// no need to sync writes if everything is in memory duh 
 		db.opt.SyncWrites = false
 		// If badger is running in memory mode, push everything into the LSM Tree.
 		db.opt.ValueThreshold = math.MaxInt32
 	}
+
+	// sets the key Registry options which is basically the file where all the keys 
+	// are held cuz we are separating the key and value storage 
+	// we are passing in opt.Dir which is the directory where we are supposed to be storing values
 	krOpt := KeyRegistryOptions{
 		ReadOnly:                      opt.ReadOnly,
 		Dir:                           opt.Dir,
@@ -440,6 +475,12 @@ func (db *DB) MaxVersion() uint64 {
 	return maxVersion
 }
 
+
+// Analyzes both the cache used for the blocks and for the indexes
+// Used to log metrics of the cache , the actual metric collection is done by the z.Histogram package in ristretto
+// The analysis is done only once a minute and the actual logs are only done one in like 5 mins 
+// Checks if it is actually appropriate to analyze the cache metrics(if it is too soon or if the cache hasnt been 
+// used too much it abandons the analysis or it may even generate WARNING logs) 
 func (db *DB) monitorCache(c *z.Closer) {
 	defer c.Done()
 	count := 0

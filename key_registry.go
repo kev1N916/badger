@@ -33,6 +33,55 @@ const (
 var sanityText = []byte("Hello Badger")
 
 // KeyRegistry used to maintain all the data keys.
+/*
+
+https://dgraph.io/blog/post/encryption-at-rest-dgraph-badger/- link which explains everything
+This code is implementing a key rotation system for database encryption.
+Let me explain what's happening and how it's used:
+The LatestDataKey function is retrieving or creating a data key that will 
+be used to encrypt database data. The interesting part is that this system uses
+multiple layers of encryption:
+
+Two-Tier Encryption System:
+
+The EncryptionKey (from options) is a master key provided by the user
+The random data (k) generated in this function becomes a data key
+The data key is what's actually used to encrypt the database content
+The data key itself is encrypted with the master key before being stored
+
+Why use random data for the key:
+
+This implements key rotation - generating new random encryption keys periodically
+The random key provides fresh entropy, eliminating patterns that might develop
+from reusing keys
+Each piece of data can be encrypted with different keys,
+limiting the impact if one key is compromised
+
+How it works in the database:
+
+When writing data to the database, the system will call LatestDataKey() to 
+get the current encryption key
+It encrypts the actual database records with this data key
+It stores the encrypted data along with the key ID (nextKeyID) that was used
+When reading data, it uses the key ID to look up the right data key for decryption
+
+Key Rotation Mechanism:
+
+Keys are automatically rotated based on the EncryptionKeyRotationDuration
+Old keys are kept in memory (in the dataKeys map) to decrypt existing data
+New data gets encrypted with the newest key
+This is a security best practice that limits the damage if a key is compromised
+
+The KeyRegistry structure manages this entire system, storing the mapping
+between key IDs and their actual key data, tracking when keys were created,
+and persisting the encrypted keys to disk for recovery after restart.
+This design provides significant security benefits:
+
+Even if the database files are stolen, they can't be decrypted without the master key
+The key rotation limits the amount of data encrypted with any single key
+The system maintains backward compatibility to read old 
+data encrypted with previous keys
+*/
 type KeyRegistry struct {
 	sync.RWMutex
 	dataKeys    map[uint64]*pb.DataKey
@@ -76,6 +125,8 @@ func OpenKeyRegistry(opt KeyRegistryOptions) (*KeyRegistry, error) {
 		return newKeyRegistry(opt), nil
 	}
 	path := filepath.Join(opt.Dir, KeyRegistryFileName)
+
+	// similar process to how the manifest file is opened in terms of how the flags are applied
 	var flags y.Flags
 	if opt.ReadOnly {
 		flags |= y.ReadOnly
@@ -137,6 +188,7 @@ func newKeyRegistryIterator(fp *os.File, encryptionKey []byte) (*keyRegistryIter
 }
 
 // validRegistry checks that given encryption key is valid or not.
+// checks if the headers are correct
 func validRegistry(fp *os.File, encryptionKey []byte) error {
 	iv := make([]byte, aes.BlockSize)
 	var err error
@@ -160,6 +212,31 @@ func validRegistry(fp *os.File, encryptionKey []byte) error {
 	return nil
 }
 
+/*
+This next() method is part of a key registry iterator that reads and processes encrypted data keys from a file. Here's a brief overview:
+
+Read Header Info:
+Reads an 8-byte buffer containing the data length (first 4 bytes) and checksum (last 4 bytes)
+Returns EOF if the end of file is reached
+
+
+Read Protobuf Data:
+Allocates a buffer based on the length read from the header
+Reads the serialized protobuf data into this buffer
+
+Verify Checksum:
+Calculates a CRC32 checksum of the data and compares it with the stored checksum
+Returns an error if the checksums don't match, indicating data corruption
+
+Unmarshal Data:
+Deserializes the protobuf data into a DataKey struct
+
+Decrypt if Needed:
+If an encryption key is available, decrypts the data key using XOR block cipher
+Uses the initialization vector (IV) stored in the data key for decryption
+
+This method essentially retrieves one encrypted data key at a time from storage, verifies its integrity, and decrypts it before returning it to the caller.
+*/
 func (kri *keyRegistryIterator) next() (*pb.DataKey, error) {
 	var err error
 	// Read crc buf and data length.
@@ -377,6 +454,37 @@ func (kr *KeyRegistry) Close() error {
 }
 
 // storeDataKey stores datakey in an encrypted format in the given buffer. If storage key preset.
+
+/*
+This code is implementing a secure data storage mechanism with multiple safeguards. Let me break down each step:
+
+Error Recovery with Decryption:
+
+If marshaling fails, the code attempts to decrypt the data key back to its original state
+This is a cleanup step to ensure the data key isn't left in an encrypted state when an error occurs
+The code uses nested error wrapping to preserve both the original error and any error that might occur during decryption
+
+Length and Checksum Calculation:
+
+The code creates an 8-byte buffer where:
+
+First 4 bytes store the length of the serialized data
+Last 4 bytes store a CRC32 checksum of the data
+The checksum provides data integrity verification
+
+These safeguards serve specific purposes:
+
+Why encryption?
+
+Protects sensitive data from unauthorized access
+Ensures data confidentiality even if the storage medium is compromised
+
+Why checksums?
+
+Detects data corruption that might occur during storage or transmission
+Ensures the data hasn't been accidentally modified
+The Castagnoli CRC table is a specific implementation that provides better error detection than standard CRC32
+*/
 func storeDataKey(buf *bytes.Buffer, storageKey []byte, k *pb.DataKey) error {
 	// xor will encrypt the IV and xor with the given data.
 	// It'll used for both encryption and decryption.
@@ -397,7 +505,7 @@ func storeDataKey(buf *bytes.Buffer, storageKey []byte, k *pb.DataKey) error {
 	if data, err = proto.Marshal(k); err != nil {
 		err = y.Wrapf(err, "Error while marshaling datakey in storeDataKey")
 		var err2 error
-		// decrypting the datakey back.
+		// decrypting the datakey back cuz we are using pointers
 		if err2 = xor(); err2 != nil {
 			return y.Wrapf(err,
 				y.Wrapf(err2, "Error while decrypting datakey in storeDataKey").Error())

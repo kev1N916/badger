@@ -50,6 +50,9 @@ func (p *valuePointer) Decode(b []byte) {
 	copy(((*[vptrSize]byte)(unsafe.Pointer(p))[:]), b[:vptrSize])
 }
 
+
+// UNDERSTOOD
+
 // header is used in value log as a header before Entry.
 type header struct {
 	klen      uint32
@@ -144,6 +147,11 @@ func (e *Entry) isZero() bool {
 	return len(e.Key) == 0
 }
 
+
+// If the entry is small enough to fit in the memtable 
+// we insert it directly there otherwise we attach the filePointer and store
+// the entry in the file it pointd to 
+// so based on the two things above we are estimating the size of the entry
 func (e *Entry) estimateSizeAndSetThreshold(threshold int64) int64 {
 	if e.valThreshold == 0 {
 		e.valThreshold = threshold

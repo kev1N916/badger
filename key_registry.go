@@ -108,6 +108,7 @@ func newKeyRegistry(opt KeyRegistryOptions) *KeyRegistry {
 	}
 }
 
+// UNDERSTOOD
 // OpenKeyRegistry opens key registry if it exists, otherwise it'll create key registry
 // and returns key registry.
 func OpenKeyRegistry(opt KeyRegistryOptions) (*KeyRegistry, error) {
@@ -177,6 +178,7 @@ type keyRegistryIterator struct {
 	lenCrcBuf [8]byte
 }
 
+// UNDERSTOOD
 // newKeyRegistryIterator returns iterator which will allow you to iterate
 // over the data key of the key registry.
 func newKeyRegistryIterator(fp *os.File, encryptionKey []byte) (*keyRegistryIterator, error) {
@@ -187,6 +189,7 @@ func newKeyRegistryIterator(fp *os.File, encryptionKey []byte) (*keyRegistryIter
 	}, validRegistry(fp, encryptionKey)
 }
 
+// UNDERSTOOD
 // validRegistry checks that given encryption key is valid or not.
 // checks if the headers are correct
 func validRegistry(fp *os.File, encryptionKey []byte) error {
@@ -212,6 +215,8 @@ func validRegistry(fp *os.File, encryptionKey []byte) error {
 	return nil
 }
 
+
+// UNDERSTOOD
 /*
 This next() method is part of a key registry iterator that reads and processes encrypted data keys from a file. Here's a brief overview:
 
@@ -274,6 +279,7 @@ func (kri *keyRegistryIterator) next() (*pb.DataKey, error) {
 	return dataKey, nil
 }
 
+// UNDERSTOOD
 // readKeyRegistry will read the key registry file and build the key registry struct.
 func readKeyRegistry(fp *os.File, opt KeyRegistryOptions) (*KeyRegistry, error) {
 	itr, err := newKeyRegistryIterator(fp, opt.EncryptionKey)
@@ -304,6 +310,8 @@ func readKeyRegistry(fp *os.File, opt KeyRegistryOptions) (*KeyRegistry, error) 
 	return kr, err
 }
 
+
+// UNDERSTOOD
 /*
 Structure of Key Registry.
 +-------------------+---------------------+--------------------+--------------+------------------+
@@ -361,6 +369,8 @@ func WriteKeyRegistry(reg *KeyRegistry, opt KeyRegistryOptions) error {
 	return syncDir(opt.Dir)
 }
 
+// UNDERSTOOD
+
 // DataKey returns datakey of the given key id.
 func (kr *KeyRegistry) DataKey(id uint64) (*pb.DataKey, error) {
 	kr.RLock()
@@ -375,6 +385,8 @@ func (kr *KeyRegistry) DataKey(id uint64) (*pb.DataKey, error) {
 	}
 	return dk, nil
 }
+
+// UNDERSTOOD
 
 // LatestDataKey will give you the latest generated datakey based on the rotation
 // period. If the last generated datakey lifetime exceeds the rotation period.
@@ -444,7 +456,7 @@ func (kr *KeyRegistry) LatestDataKey() (*pb.DataKey, error) {
 	kr.dataKeys[kr.nextKeyID] = dk
 	return dk, nil
 }
-
+// UNDERSTOOD
 // Close closes the key registry.
 func (kr *KeyRegistry) Close() error {
 	if !(kr.opt.ReadOnly || kr.opt.InMemory) {
@@ -453,6 +465,8 @@ func (kr *KeyRegistry) Close() error {
 	return nil
 }
 
+
+// UNDERSTOOD
 // storeDataKey stores datakey in an encrypted format in the given buffer. If storage key preset.
 
 /*

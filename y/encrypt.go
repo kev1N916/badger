@@ -13,6 +13,8 @@ import (
 	"io"
 )
 
+// UNDERSTOOD
+
 // XORBlock encrypts the given data with AES and XOR's with IV.
 // Can be used for both encryption and decryption. IV is of
 // AES block size.

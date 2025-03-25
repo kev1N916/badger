@@ -226,6 +226,7 @@ func Open(opt Options) (*DB, error) {
 		}
 	}
 
+	// creates the manifest file
 	manifestFile, manifest, err := openOrCreateManifestFile(opt)
 	if err != nil {
 		return nil, err
@@ -236,6 +237,7 @@ func Open(opt Options) (*DB, error) {
 		}
 	}()
 
+	// initializes the database
 	db := &DB{
 		imm:              make([]*memTable, 0, opt.NumMemtables),
 		flushChan:        make(chan *memTable, opt.NumMemtables),
@@ -345,9 +347,9 @@ func Open(opt Options) (*DB, error) {
 		db.opt.ValueThreshold = math.MaxInt32
 	}
 
-	// sets the key Registry options which is basically the file where all the keys 
-	// are held cuz we are separating the key and value storage 
-	// we are passing in opt.Dir which is the directory where we are supposed to be storing values
+	// sets the key Registry options which is basically the file where all the encryption keys are stored
+	// we are passing in opt.Dir as the directory
+	// ENCRYPTION KEYS ARE STORED IN opt.Dir
 	krOpt := KeyRegistryOptions{
 		ReadOnly:                      opt.ReadOnly,
 		Dir:                           opt.Dir,
@@ -359,14 +361,18 @@ func Open(opt Options) (*DB, error) {
 	if db.registry, err = OpenKeyRegistry(krOpt); err != nil {
 		return db, err
 	}
+	// calculates the size of existing ssTables and vLog files which is used for metrics
 	db.calculateSize()
 	db.closers.updateSize = z.NewCloser(1)
+	// starts the goroutine for updating the metrics
 	go db.updateSize(db.closers.updateSize)
 
+	// opens the memTables
 	if err := db.openMemTables(db.opt); err != nil {
 		return nil, y.Wrapf(err, "while opening memtables")
 	}
 
+	// creates a new memtable
 	if !db.opt.ReadOnly {
 		if db.mt, err = db.newMemTable(); err != nil {
 			return nil, y.Wrapf(err, "cannot create memtable")
@@ -1185,9 +1191,12 @@ func exists(path string) (bool, error) {
 	return true, err
 }
 
+// UNDERSTOOD
 // This function does a filewalk, calculates the size of vlog and sst files and stores it in
 // y.LSMSize and y.VlogSize.
 func (db *DB) calculateSize() {
+
+	// no need to calculate if in memory
 	if db.opt.InMemory {
 		return
 	}
@@ -1227,6 +1236,8 @@ func (db *DB) calculateSize() {
 	y.VlogSizeSet(db.opt.MetricsEnabled, db.opt.ValueDir, newInt(vlogSize))
 }
 
+
+// Every one minutes we calculate the size again and update the metrics 
 func (db *DB) updateSize(lc *z.Closer) {
 	defer lc.Done()
 	if db.opt.InMemory {

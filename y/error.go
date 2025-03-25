@@ -24,6 +24,8 @@ import (
 	"github.com/pkg/errors"
 )
 
+// UNDERSTOOD
+
 var debugMode = false
 
 // Check logs fatal if err != nil.
